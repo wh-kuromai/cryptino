@@ -91,7 +91,7 @@ func VerifyJWT(cs *CipherSuite, token []byte, veri Verifier) (*JSONWebToken, err
 	now := time.Now().Unix()
 
 	//fmt.Println("VerifyJWT:", now, ", ", jwt.Body.ExpirationTime)
-	if jwt.Body.ExpirationTime != 0 && jwt.Body.ExpirationTime > now {
+	if jwt.Body.ExpirationTime != 0 && jwt.Body.ExpirationTime < now {
 		return nil, errors.New("exp expired")
 	}
 

@@ -1,5 +1,6 @@
-
 # Cryptino
+
+[![Go Reference](https://pkg.go.dev/badge/github.com/wh-kuromai/cryptino.svg)](https://pkg.go.dev/github.com/wh-kuromai/cryptino)
 
 A lightweight cryptographic library for Go, supporting JOSE, JWT, ECDH, RSA, and AES-GCM with pluggable cipher suites.
 

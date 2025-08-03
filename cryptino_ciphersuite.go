@@ -9,7 +9,7 @@ var SHA256 = SHA(crypto.SHA256)
 var SHA384 = SHA(crypto.SHA384)
 var SHA512 = SHA(crypto.SHA512)
 
-var DEFAULT = GetCipherSuiteFromAlg("RS256")
+var DEFAULT = GetCipherSuiteFromAlg("DEFAULT")
 
 type CipherSuite struct {
 	Name        string
@@ -76,6 +76,13 @@ func GetCipherSuiteFromAlg(alg string) *CipherSuite {
 			Name:        "ES512",
 			KeyType:     "EC",
 			Curve:       elliptic.P521(),
+			Hash:        SHA512,
+			GenerateKey: generateECKeyPK,
+		}
+	case "DEFAULT":
+		return &CipherSuite{
+			Bit:         2048,
+			Curve:       elliptic.P256(),
 			Hash:        SHA512,
 			GenerateKey: generateECKeyPK,
 		}

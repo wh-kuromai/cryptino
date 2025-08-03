@@ -1,6 +1,6 @@
 module github.com/wh-kuromai/cryptino
 
-go 1.21
+go 1.23.0
 
 require golang.org/x/crypto v0.39.0
 
