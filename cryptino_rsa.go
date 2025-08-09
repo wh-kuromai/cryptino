@@ -98,6 +98,10 @@ func unmarshalJSONRSAPrivateKey(jsn []byte, key *RSAPrivateKey) error {
 		return err
 	}
 
+	if pkj.Type != "" && pkj.Type != "RSA" {
+		return errors.New("jwk: kty must be RSA")
+	}
+
 	key.N, err = decodeBigInt(pkj.N)
 	if err != nil {
 		return err
@@ -139,6 +143,10 @@ func unmarshalJSONRSAPublicKey(jsn []byte, key *RSAPublicKey) error {
 	err := json.Unmarshal(jsn, pkj)
 	if err != nil {
 		return err
+	}
+
+	if pkj.Type != "" && pkj.Type != "RSA" {
+		return errors.New("jwk: kty must be RSA")
 	}
 
 	key.N, err = decodeBigInt(pkj.N)

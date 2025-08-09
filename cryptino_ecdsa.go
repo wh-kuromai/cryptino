@@ -1,6 +1,7 @@
 package cryptino
 
 import (
+	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -8,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 
@@ -52,18 +54,25 @@ func Curve(alg string) elliptic.Curve {
 }
 */
 
+var hkdfSalt = []byte{
+	0x3a, 0x9f, 0x22, 0x81, 0x5c, 0xe3, 0x47, 0x10,
+	0x9b, 0x6d, 0x2f, 0x41, 0x73, 0x99, 0xb8, 0x04,
+	0x1c, 0x56, 0xab, 0x5e, 0x2a, 0x0d, 0x7f, 0x61,
+	0x98, 0x33, 0xdd, 0x14, 0x02, 0x77, 0xa1, 0xc0,
+}
+
 // Curve returns elliptic curve used by specified algorism.
-func ccurve(alg string) elliptic.Curve {
+func ccurve(alg string) (elliptic.Curve, error) {
 	switch alg {
 	case "P-256":
-		return elliptic.P256()
+		return elliptic.P256(), nil
 	case "P-384":
-		return elliptic.P384()
+		return elliptic.P384(), nil
 	case "P-521":
-		return elliptic.P521()
+		return elliptic.P521(), nil
 	}
+	return nil, fmt.Errorf("unsupported curve: %s", alg)
 
-	panic("unsupported algorithm")
 }
 
 func (key *ECPublicKey) sigBits() int {
@@ -145,6 +154,31 @@ func convertECPublicKeyJSON(pub *ecdsa.PublicKey) *ECPublicKeyJSON {
 	return pubjson
 }
 
+// elliptic.Curve -> ecdh.Curve
+func ecdhCurveFromElliptic(c elliptic.Curve) (ecdh.Curve, error) {
+	switch c {
+	case elliptic.P256():
+		return ecdh.P256(), nil
+	case elliptic.P384():
+		return ecdh.P384(), nil
+	case elliptic.P521():
+		return ecdh.P521(), nil
+	default:
+		return nil, errors.New("unsupported curve for ecdh validation")
+	}
+}
+
+func marshalUncompressed(c elliptic.Curve, x, y *big.Int) []byte {
+	size := (c.Params().BitSize + 7) / 8
+	b := make([]byte, 1+2*size)
+	b[0] = 0x04
+	xb := x.Bytes()
+	yb := y.Bytes()
+	copy(b[1+size-len(xb):1+size], xb)
+	copy(b[1+2*size-len(yb):], yb)
+	return b
+}
+
 func unmarshalJSONECPrivateKey(jsn []byte, key *ECPrivateKey) error {
 	pkj := &ECPrivateKeyJSON{}
 	err := json.Unmarshal(jsn, pkj)
@@ -152,7 +186,14 @@ func unmarshalJSONECPrivateKey(jsn []byte, key *ECPrivateKey) error {
 		return err
 	}
 
-	key.Curve = ccurve(pkj.Curve)
+	if pkj.Type != "" && pkj.Type != "EC" {
+		return errors.New("jwk: kty must be EC")
+	}
+
+	key.Curve, err = ccurve(pkj.Curve)
+	if err != nil {
+		return err
+	}
 	key.X, err = decodeBigInt(pkj.X)
 	if err != nil {
 		return err
@@ -165,6 +206,20 @@ func unmarshalJSONECPrivateKey(jsn []byte, key *ECPrivateKey) error {
 	if err != nil {
 		return err
 	}
+
+	ecdhc, err := ecdhCurveFromElliptic(key.Curve)
+	if err != nil {
+		return err
+	}
+	pt := marshalUncompressed(key.Curve, key.X, key.Y)
+	if _, err := ecdhc.NewPublicKey(pt); err != nil {
+		return errors.New("ec: invalid point (not on curve or at infinity)")
+	}
+	n := key.Curve.Params().N
+	if key.D.Sign() <= 0 || key.D.Cmp(n) >= 0 {
+		return errors.New("ec: invalid private scalar")
+	}
+
 	return nil
 }
 
@@ -175,7 +230,14 @@ func unmarshalJSONECPublicKey(jsn []byte, key *ECPublicKey) error {
 		return err
 	}
 
-	key.Curve = ccurve(pkj.Curve)
+	if pkj.Type != "" && pkj.Type != "EC" {
+		return errors.New("jwk: kty must be EC")
+	}
+
+	key.Curve, err = ccurve(pkj.Curve)
+	if err != nil {
+		return err
+	}
 	key.X, err = decodeBigInt(pkj.X)
 	if err != nil {
 		return err
@@ -184,6 +246,16 @@ func unmarshalJSONECPublicKey(jsn []byte, key *ECPublicKey) error {
 	if err != nil {
 		return err
 	}
+
+	ecdhc, err := ecdhCurveFromElliptic(key.Curve)
+	if err != nil {
+		return err
+	}
+	pt := marshalUncompressed(key.Curve, key.X, key.Y)
+	if _, err := ecdhc.NewPublicKey(pt); err != nil {
+		return errors.New("ec: invalid point (not on curve or at infinity)")
+	}
+
 	return nil
 }
 
@@ -307,7 +379,7 @@ func (key *ECPrivateKey) ECDHShared(remote *ecdsa.PublicKey) ([]byte, error) {
 }
 
 func deriveAESKey(shared []byte, keyLen int, info []byte) ([]byte, error) {
-	r := hkdf.New(sha256.New, shared, nil, info)
+	r := hkdf.New(sha256.New, shared, hkdfSalt, info)
 	key := make([]byte, keyLen)
 	if _, err := io.ReadFull(r, key); err != nil {
 		return nil, err
