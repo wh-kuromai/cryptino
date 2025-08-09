@@ -6,7 +6,7 @@ import (
 )
 
 func QTPEncrypt(secret PrivateKey, remote PublicKey, msg []byte) (string, error) {
-	buf, err := secret.Encrypt(DEFAULT, remote, msg)
+	buf, err := secret.Encrypt(ES256(), remote, msg)
 	if err != nil {
 		return "", err
 	}
@@ -32,7 +32,7 @@ func QTPDecrypt(secret PrivateKey, msg string) (PublicKey, []byte, error) {
 		return nil, nil, err
 	}
 
-	buf, err := secret.Decrypt(DEFAULT, remote, msgbuf)
+	buf, err := secret.Decrypt(ES256(), remote, msgbuf)
 	if err != nil {
 		return nil, nil, err
 	}

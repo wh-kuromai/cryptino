@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"strconv"
 	"strings"
 )
 
@@ -36,7 +35,7 @@ func getJWS(head *JOSEHeader, body []byte) *JSONWebSignature {
 	}
 }
 */
-
+/*
 func getJWTAlg(alg string) string {
 	if strings.Contains(alg, "RSA") {
 		if strings.Contains(alg, "SHA256") {
@@ -58,21 +57,35 @@ func getJWTAlg(alg string) string {
 
 	return ""
 }
+*/
 
 // Verify signature
 func (sig *JSONWebSignature) Verify(cs *CipherSuite, veri Verifier) bool {
+	if cs.KeyType != veri.Name() {
+		return false
+	}
 
 	jwsspl := strings.Split(sig.raw, ".")
 	if len(jwsspl) != 3 {
 		return false
 	}
 
-	signbytes, err := base64.RawURLEncoding.DecodeString(jwsspl[2])
-	if err != nil {
+	// 1) alg の厳格一致（none は拒否）
+	if sig.Header.Algorithm == "" || sig.Header.Algorithm == "none" {
+		return false
+	}
+	if sig.Header.Algorithm != cs.Name {
 		return false
 	}
 
-	if sig.Header.Critical != nil {
+	// 2) crit 未対応 → 未知があれば拒否
+	if len(sig.Header.Critical) > 0 {
+		return false
+	}
+
+	// 3) 署名検証
+	signbytes, err := base64.RawURLEncoding.DecodeString(jwsspl[2])
+	if err != nil {
 		return false
 	}
 
@@ -81,7 +94,7 @@ func (sig *JSONWebSignature) Verify(cs *CipherSuite, veri Verifier) bool {
 
 // Marshal into RFC 7515 compliant JSON Web Signature
 func (sig *JSONWebSignature) Marshal(cs *CipherSuite, signer Signer) (string, error) {
-	sig.Header.Algorithm = getJWTAlg(signer.Name() + "-SHA" + strconv.Itoa(signer.Size()))
+	sig.Header.Algorithm = cs.Name
 
 	headjsn, err := json.Marshal(sig.Header)
 	if err != nil {

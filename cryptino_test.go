@@ -35,18 +35,18 @@ func TestSign(t *testing.T) {
 
 	fmt.Printf("Generate JWT using EC PrivateKey.\n")
 	jwt := GetJWTBasic("sample", 3000)
-	jwtm, _ := jwt.Marshal(DEFAULT, es256pk)
+	jwtm, _ := jwt.Marshal(ES256(), es256pk)
 	jwt.PrintInJSON("", "    ")
 	fmt.Printf("%s\n\n", jwtm)
 
 	fmt.Printf("Verify JWT using EC PublicKey.\n")
-	jwt2, _ := VerifyJWT(DEFAULT, []byte(jwtm), es256pub)
+	jwt2, _ := VerifyJWT(ES256(), []byte(jwtm), es256pub)
 	fmt.Printf("Verify: %t\n", jwt2 != nil)
 	jwt2.PrintInJSON("", "    ")
 	fmt.Printf("\n")
 
 	fmt.Printf("Verify incorrect JWT.\n")
-	jwt2, _ = VerifyJWT(DEFAULT, []byte(string(jwtm)+"ABC"), es256pub)
+	jwt2, _ = VerifyJWT(ES256(), []byte(string(jwtm)+"ABC"), es256pub)
 	fmt.Printf("Verify: %t\n\n", jwt2 != nil)
 
 	fmt.Printf("Generate Second EC PrivateKey.\n")
@@ -77,11 +77,11 @@ func TestEncryptRSAGCM(t *testing.T) {
 	printInJSON(rs256pk2)
 
 	target := []byte("Encrypt with RSA-GCM")
-	buf, _ := rs256pk1.Encrypt(DEFAULT, rs256pk2.Public(), target)
+	buf, _ := rs256pk1.Encrypt(RS256(), rs256pk2.Public(), target)
 	fmt.Println(base64.RawStdEncoding.EncodeToString(buf))
 
 	fmt.Println("-----")
-	buf2, err := rs256pk2.Decrypt(DEFAULT, rs256pk1.Public(), buf)
+	buf2, err := rs256pk2.Decrypt(RS256(), rs256pk1.Public(), buf)
 	fmt.Println(string(buf2), err)
 
 	if !bytes.Equal(buf2, target) {
@@ -119,11 +119,11 @@ func TestEncryptECDHGCM(t *testing.T) {
 	printInJSON(rs256pk2)
 
 	target := []byte("Encrypt with ECDH-GCM")
-	buf, _ := rs256pk1.Encrypt(DEFAULT, rs256pk2.Public(), target)
+	buf, _ := rs256pk1.Encrypt(RS256(), rs256pk2.Public(), target)
 	fmt.Println(base64.RawStdEncoding.EncodeToString(buf))
 
 	fmt.Println("-----")
-	buf2, err := rs256pk2.Decrypt(DEFAULT, rs256pk1.Public(), buf)
+	buf2, err := rs256pk2.Decrypt(RS256(), rs256pk1.Public(), buf)
 	fmt.Println(string(buf2), err)
 
 	if !bytes.Equal(buf2, target) {

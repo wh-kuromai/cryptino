@@ -38,11 +38,12 @@ type rsaPublicKeyJSON struct {
 	KeyOps []string `json:"key_ops,omitempty"`
 }
 
+/*
 // Bits returns encryption bit length
 func Bits(alg string) int {
 	if strings.Contains(alg, "SHA256") {
 		return 2048
-	} else if strings.Contains(alg, "SHA386") {
+	} else if strings.Contains(alg, "SHA384") {
 		return 3072
 	} else if strings.Contains(alg, "SHA512") {
 		return 4096
@@ -50,6 +51,7 @@ func Bits(alg string) int {
 
 	return 2048
 }
+*/
 
 func GenerateRSAKey(cs *CipherSuite) (*RSAPrivateKey, error) {
 	pk, err := rsa.GenerateKey(rand.Reader, cs.Bit)
@@ -96,12 +98,31 @@ func unmarshalJSONRSAPrivateKey(jsn []byte, key *RSAPrivateKey) error {
 		return err
 	}
 
-	key.N = decodeBigInt(pkj.N)
-	key.E = decodeInt(pkj.E)
-	key.D = decodeBigInt(pkj.D)
+	key.N, err = decodeBigInt(pkj.N)
+	if err != nil {
+		return err
+	}
+	key.E, err = decodeInt(pkj.E)
+	if err != nil {
+		return err
+	}
+	key.D, err = decodeBigInt(pkj.D)
+	if err != nil {
+		return err
+	}
+
+	pp, err := decodeBigInt(pkj.P)
+	if err != nil {
+		return err
+	}
+	pq, err := decodeBigInt(pkj.Q)
+	if err != nil {
+		return err
+	}
+
 	key.Primes = []*big.Int{
-		decodeBigInt(pkj.P),
-		decodeBigInt(pkj.Q),
+		pp,
+		pq,
 	}
 
 	err = (*rsa.PrivateKey)(key).Validate()
@@ -120,8 +141,14 @@ func unmarshalJSONRSAPublicKey(jsn []byte, key *RSAPublicKey) error {
 		return err
 	}
 
-	key.N = decodeBigInt(pkj.N)
-	key.E = decodeInt(pkj.E)
+	key.N, err = decodeBigInt(pkj.N)
+	if err != nil {
+		return err
+	}
+	key.E, err = decodeInt(pkj.E)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -177,17 +204,23 @@ func (key *RSAPrivateKey) Encrypt(cs *CipherSuite, remote PublicKey, msg []byte)
 		return nil, errors.New("key not match")
 	}
 
-	shared := make([]byte, key.Size()/8)
-	rand.Read(shared)
+	seed := make([]byte, 32)
+	if _, err := rand.Read(seed); err != nil {
+		return nil, err
+	}
 
-	encShared, err := rsa.EncryptOAEP(hashFromSize(key.Size()).New(), rand.Reader, (*rsa.PublicKey)(pubkey), shared, nil)
+	encShared, err := rsa.EncryptOAEP(cs.Hash.New(), rand.Reader, (*rsa.PublicKey)(pubkey), seed, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	//fmt.Println("SIZEOFSHARED", len(encShared))
+	aesKey, err := deriveAESKey(seed, 32, []byte("RSA-OAEP AES-256-GCM"))
+	if err != nil {
+		return nil, err
+	}
 
-	enc, err := EncryptByGCM(shared, msg)
+	enc, err := EncryptByGCM(aesKey, msg)
 	if err != nil {
 		return nil, err
 	}
@@ -214,15 +247,10 @@ func (key *RSAPrivateKey) Decrypt(cs *CipherSuite, remote PublicKey, msg []byte)
 		return nil, errors.New("key not match")
 	}
 
-	encShared := msg[0:key.Size()]
+	encSeed := msg[0:key.Size()]
 	enc := msg[key.Size() : len(msg)-key.Size()]
 	signbody := msg[:len(msg)-key.Size()]
 	sign := msg[len(msg)-key.Size():]
-
-	shared, err := rsa.DecryptOAEP(hashFromSize(key.Size()).New(), rand.Reader, (*rsa.PrivateKey)(key), encShared, nil)
-	if err != nil {
-		return nil, err
-	}
 
 	//fmt.Println("signbody", base64.RawStdEncoding.EncodeToString(signbody))
 	//fmt.Println("sign2", base64.RawStdEncoding.EncodeToString(sign))
@@ -230,25 +258,35 @@ func (key *RSAPrivateKey) Decrypt(cs *CipherSuite, remote PublicKey, msg []byte)
 		return nil, errors.New("signature error")
 	}
 
-	return DecryptByGCM(shared, enc)
+	seed, err := rsa.DecryptOAEP(cs.Hash.New(), rand.Reader, (*rsa.PrivateKey)(key), encSeed, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	aesKey, err := deriveAESKey(seed, 32, []byte("RSA-OAEP AES-256-GCM"))
+	if err != nil {
+		return nil, err
+	}
+
+	return DecryptByGCM(aesKey, enc)
 }
 
 // Signature calculate signature.
 func (key *RSAPrivateKey) Signature(cs *CipherSuite, msg []byte) ([]byte, error) {
 	if strings.Contains(cs.Padding, "PKCS1") {
-		return rsa.SignPKCS1v15(rand.Reader, (*rsa.PrivateKey)(key), hashFromSize(key.Size()), hashAlgFromSize(key.Size())(msg))
+		return rsa.SignPKCS1v15(rand.Reader, (*rsa.PrivateKey)(key), cs.Hash, cs.HashEncode(msg))
 	}
 
-	return rsa.SignPSS(rand.Reader, (*rsa.PrivateKey)(key), hashFromSize(key.Size()), hashAlgFromSize(key.Size())(msg), nil)
+	return rsa.SignPSS(rand.Reader, (*rsa.PrivateKey)(key), cs.Hash, cs.HashEncode(msg), nil)
 }
 
 // Verify verifies signature.
 func (key *RSAPublicKey) Verify(cs *CipherSuite, msg []byte, sign []byte) bool {
 	if strings.Contains(cs.Padding, "PKCS1") {
-		return rsa.VerifyPKCS1v15((*rsa.PublicKey)(key), hashFromSize(key.Size()), hashAlgFromSize(key.Size())(msg), sign) == nil
+		return rsa.VerifyPKCS1v15((*rsa.PublicKey)(key), cs.Hash, cs.HashEncode(msg), sign) == nil
 	}
 
-	return rsa.VerifyPSS((*rsa.PublicKey)(key), hashFromSize(key.Size()), hashAlgFromSize(key.Size())(msg), sign, nil) == nil
+	return rsa.VerifyPSS((*rsa.PublicKey)(key), cs.Hash, cs.HashEncode(msg), sign, nil) == nil
 }
 
 // Thumbprint creates RFC 7638 compliant Public Key identifier.
@@ -267,6 +305,6 @@ func (key *RSAPublicKey) Thumbprint(cs *CipherSuite) string {
 	}
 
 	thumbbase, _ := json.Marshal(thumbobj)
-	thumb := cs.Hash(thumbbase)
+	thumb := cs.HashEncode(thumbbase)
 	return base64.RawURLEncoding.EncodeToString(thumb)
 }

@@ -4,11 +4,14 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"math/big"
 
+	"golang.org/x/crypto/hkdf"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -56,7 +59,7 @@ func ccurve(alg string) elliptic.Curve {
 		return elliptic.P256()
 	case "P-384":
 		return elliptic.P384()
-	case "P-512":
+	case "P-521":
 		return elliptic.P521()
 	}
 
@@ -76,19 +79,26 @@ func (key *ECPublicKey) sigBits() int {
 	panic("unsupported curve")
 }
 
-func decodeBigInt(s string) *big.Int {
-	b, _ := base64.RawURLEncoding.DecodeString(s)
+func decodeBigInt(s string) (*big.Int, error) {
+	b, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return nil, err
+	}
 	r := &big.Int{}
 	r.SetBytes(b)
-	return r
+	return r, nil
 }
 
 func encodeBigInt(i *big.Int) string {
 	return base64.RawURLEncoding.EncodeToString(i.Bytes())
 }
 
-func decodeInt(s string) int {
-	return int(decodeBigInt(s).Int64())
+func decodeInt(s string) (int, error) {
+	bi, err := decodeBigInt(s)
+	if err != nil {
+		return 0, err
+	}
+	return int(bi.Int64()), nil
 }
 
 func encodeInt(i int) string {
@@ -143,9 +153,18 @@ func unmarshalJSONECPrivateKey(jsn []byte, key *ECPrivateKey) error {
 	}
 
 	key.Curve = ccurve(pkj.Curve)
-	key.X = decodeBigInt(pkj.X)
-	key.Y = decodeBigInt(pkj.Y)
-	key.D = decodeBigInt(pkj.D)
+	key.X, err = decodeBigInt(pkj.X)
+	if err != nil {
+		return err
+	}
+	key.Y, err = decodeBigInt(pkj.Y)
+	if err != nil {
+		return err
+	}
+	key.D, err = decodeBigInt(pkj.D)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -157,8 +176,14 @@ func unmarshalJSONECPublicKey(jsn []byte, key *ECPublicKey) error {
 	}
 
 	key.Curve = ccurve(pkj.Curve)
-	key.X = decodeBigInt(pkj.X)
-	key.Y = decodeBigInt(pkj.Y)
+	key.X, err = decodeBigInt(pkj.X)
+	if err != nil {
+		return err
+	}
+	key.Y, err = decodeBigInt(pkj.Y)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -211,17 +236,17 @@ func (key *ECPublicKey) Size() int {
 	return 256
 }
 
-func (key *ECPublicKey) hashAlg() Hash {
-	switch key.Curve {
-	case elliptic.P256():
-		return SHA256
-	case elliptic.P384():
-		return SHA384
-	case elliptic.P521():
-		return SHA512
-	}
-	return SHA256
-}
+//func (key *ECPublicKey) hashAlg() Hash {
+//	switch key.Curve {
+//	case elliptic.P256():
+//		return SHA256
+//	case elliptic.P384():
+//		return SHA384
+//	case elliptic.P521():
+//		return SHA512
+//	}
+//	return SHA256
+//}
 
 // Size
 func (key *ECPrivateKey) Size() int {
@@ -233,11 +258,22 @@ func (key *ECPrivateKey) Public() PublicKey {
 	return (*ECPublicKey)(&key.PublicKey)
 }
 
-func joinRS(bit int, r *big.Int, s *big.Int) []byte {
-	b := make([]byte, 0, bit*2)
-	b = append(b, r.Bytes()...)
-	b = append(b, s.Bytes()...)
-	return b
+func leftPad(b []byte, n int) []byte {
+	if len(b) >= n {
+		return b[len(b)-n:]
+	}
+	out := make([]byte, n)
+	copy(out[n-len(b):], b)
+	return out
+}
+
+func joinRS(bit int, r, s *big.Int) []byte {
+	rb := leftPad(r.Bytes(), bit)
+	sb := leftPad(s.Bytes(), bit)
+	out := make([]byte, 0, bit*2)
+	out = append(out, rb...)
+	out = append(out, sb...)
+	return out
 }
 
 type twoBigInt struct {
@@ -245,14 +281,15 @@ type twoBigInt struct {
 	b *big.Int
 }
 
-func (key *ECPublicKey) splitRS(sign []byte) *twoBigInt {
+func (key *ECPublicKey) splitRS(sign []byte) (*twoBigInt, error) {
 	bit := key.sigBits()
-
-	R := big.Int{}
-	S := big.Int{}
+	if len(sign) != bit*2 {
+		return nil, errors.New("rs sign length error")
+	} // ここは好みで false 戻しに
+	var R, S big.Int
 	R.SetBytes(sign[0:bit])
 	S.SetBytes(sign[bit:])
-	return &twoBigInt{&R, &S}
+	return &twoBigInt{&R, &S}, nil
 }
 
 func (key *ECPrivateKey) ECDHShared(remote *ecdsa.PublicKey) ([]byte, error) {
@@ -269,6 +306,15 @@ func (key *ECPrivateKey) ECDHShared(remote *ecdsa.PublicKey) ([]byte, error) {
 	return ecdhkey.ECDH(ecdhpub)
 }
 
+func deriveAESKey(shared []byte, keyLen int, info []byte) ([]byte, error) {
+	r := hkdf.New(sha256.New, shared, nil, info)
+	key := make([]byte, keyLen)
+	if _, err := io.ReadFull(r, key); err != nil {
+		return nil, err
+	}
+	return key, nil
+}
+
 func (key *ECPrivateKey) Encrypt(cs *CipherSuite, remote PublicKey, msg []byte) ([]byte, error) {
 	pubkey, ok := remote.(*ECPublicKey)
 	if !ok {
@@ -280,7 +326,11 @@ func (key *ECPrivateKey) Encrypt(cs *CipherSuite, remote PublicKey, msg []byte) 
 		return nil, err
 	}
 
-	return EncryptByGCM(shared, msg)
+	aesKey, err := deriveAESKey(shared, 32, []byte("ECDH-ES AES-256-GCM"))
+	if err != nil {
+		return nil, err
+	}
+	return EncryptByGCM(aesKey, msg)
 }
 
 func (key *ECPrivateKey) Decrypt(cs *CipherSuite, remote PublicKey, msg []byte) ([]byte, error) {
@@ -294,23 +344,40 @@ func (key *ECPrivateKey) Decrypt(cs *CipherSuite, remote PublicKey, msg []byte) 
 		return nil, err
 	}
 
-	return DecryptByGCM(shared, msg)
-}
-
-// Signature calculate signature.
-func (key *ECPrivateKey) Signature(cs *CipherSuite, msg []byte) ([]byte, error) {
-	r, s, err := ecdsa.Sign(rand.Reader, (*ecdsa.PrivateKey)(key), hashAlgFromSize(key.Size())(msg))
+	aesKey, err := deriveAESKey(shared, 32, []byte("ECDH-ES AES-256-GCM"))
 	if err != nil {
 		return nil, err
 	}
+	return DecryptByGCM(aesKey, msg)
+}
 
+func normalizeS(curve elliptic.Curve, s *big.Int) *big.Int {
+	n := curve.Params().N
+	half := new(big.Int).Rsh(new(big.Int).Set(n), 1)
+	if s.Cmp(half) == 1 {
+		s = new(big.Int).Sub(n, s)
+	}
+	return s
+}
+
+func (key *ECPrivateKey) Signature(cs *CipherSuite, msg []byte) ([]byte, error) {
+	h := cs.HashEncode(msg)
+	//h := hashAlgFromSize(key.Size())(msg)
+	r, s, err := ecdsa.Sign(rand.Reader, (*ecdsa.PrivateKey)(key), h)
+	if err != nil {
+		return nil, err
+	}
+	s = normalizeS(key.Curve, s)
 	return joinRS((*ECPublicKey)(&key.PublicKey).sigBits(), r, s), nil
 }
 
 // Verify verifies signature.
 func (key *ECPublicKey) Verify(cs *CipherSuite, msg []byte, sign []byte) bool {
-	tbi := key.splitRS(sign)
-	return ecdsa.Verify((*ecdsa.PublicKey)(key), key.hashAlg()(msg), tbi.a, tbi.b)
+	tbi, err := key.splitRS(sign)
+	if err != nil {
+		return false
+	}
+	return ecdsa.Verify((*ecdsa.PublicKey)(key), cs.HashEncode(msg), tbi.a, tbi.b)
 }
 
 // Thumbprint creates RFC 7638 compliant Public Key identifier.
@@ -329,7 +396,7 @@ func (key *ECPublicKey) Thumbprint(cs *CipherSuite) string {
 	}
 
 	thumbbase, _ := json.Marshal(thumbobj)
-	thumb := cs.Hash(thumbbase)
+	thumb := cs.HashEncode(thumbbase)
 	//key.thumb =
 	return base64.RawURLEncoding.EncodeToString(thumb)
 }
